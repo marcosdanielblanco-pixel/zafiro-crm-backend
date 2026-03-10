@@ -10,19 +10,54 @@ app.use(express.json({ limit: "10mb" }));
 // =========================================================
 // CONFIG
 // =========================================================
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT || 3000);
 
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+// =========================================================
+// VALIDACIÓN DE VARIABLES
+// =========================================================
+function requerirEnv(nombre, valor) {
+  if (!valor || String(valor).trim() === "") {
+    throw new Error(`Falta variable de entorno: ${nombre}`);
+  }
+  return valueOrTrim(valor);
+}
+
+function valueOrTrim(valor) {
+  return typeof valor === "string" ? valor.trim() : valor;
+}
+
+const ENV = {
+  PORT,
+  META_VERIFY_TOKEN: requerirEnv("META_VERIFY_TOKEN", META_VERIFY_TOKEN),
+  META_PHONE_NUMBER_ID: requerirEnv("META_PHONE_NUMBER_ID", META_PHONE_NUMBER_ID),
+  META_ACCESS_TOKEN: requerirEnv("META_ACCESS_TOKEN", META_ACCESS_TOKEN),
+  OPENAI_API_KEY: requerirEnv("OPENAI_API_KEY", OPENAI_API_KEY),
+  OPENAI_MODEL: valueOrTrim(OPENAI_MODEL),
+  SUPABASE_URL: requerirEnv("SUPABASE_URL", SUPABASE_URL),
+  SUPABASE_SERVICE_ROLE_KEY: requerirEnv("SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SERVICE_ROLE_KEY)
+};
+
+console.log("Variables cargadas OK:", {
+  PORT: ENV.PORT,
+  META_PHONE_NUMBER_ID: ENV.META_PHONE_NUMBER_ID,
+  OPENAI_MODEL: ENV.OPENAI_MODEL,
+  SUPABASE_URL: ENV.SUPABASE_URL
+});
+
+const supabase = createClient(
+  ENV.SUPABASE_URL,
+  ENV.SUPABASE_SERVICE_ROLE_KEY
+);
 
 // =========================================================
 // HELPERS
@@ -42,13 +77,16 @@ function limpiarTelefono(numero) {
 function normalizarIngreso(valor) {
   if (valor == null || valor === "") return null;
   if (typeof valor === "number") return valor;
-  const solo = String(valor).replace(/[^\d.,]/g, "").replace(/\./g, "").replace(",", ".");
+  const solo = String(valor)
+    .replace(/[^\d.,]/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
   const n = Number(solo);
   return Number.isNaN(n) ? null : n;
 }
 
 async function enviarTextoWhatsApp(to, body) {
-  const url = `https://graph.facebook.com/v21.0/${META_PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/v21.0/${ENV.META_PHONE_NUMBER_ID}/messages`;
 
   const payload = {
     messaging_product: "whatsapp",
@@ -62,13 +100,14 @@ async function enviarTextoWhatsApp(to, body) {
   const resp = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+      Authorization: `Bearer ${ENV.META_ACCESS_TOKEN}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify(payload)
   });
 
   const data = await resp.json();
+
   if (!resp.ok) {
     console.error("Error enviando WhatsApp:", data);
     throw new Error("No se pudo enviar mensaje por WhatsApp");
@@ -195,11 +234,11 @@ Respondé SOLO en JSON válido.`
   const resp = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      Authorization: `Bearer ${ENV.OPENAI_API_KEY}`,
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      model: OPENAI_MODEL,
+      model: ENV.OPENAI_MODEL,
       input
     })
   });
@@ -296,7 +335,7 @@ app.get("/meta/webhook", (req, res) => {
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode === "subscribe" && token === META_VERIFY_TOKEN) {
+  if (mode === "subscribe" && token === ENV.META_VERIFY_TOKEN) {
     console.log("Webhook verificado correctamente");
     return res.status(200).send(challenge);
   }
@@ -327,7 +366,9 @@ app.post("/meta/webhook", async (req, res) => {
           .update({ estado_mensaje: estado })
           .eq("wa_message_id", waMessageId);
 
-        if (error) console.error("Error actualizando estado mensaje:", error);
+        if (error) {
+          console.error("Error actualizando estado mensaje:", error);
+        }
       }
 
       return res.sendStatus(200);
@@ -348,24 +389,23 @@ app.post("/meta/webhook", async (req, res) => {
           textoCliente = `[${tipo}]`;
         }
 
-        // Buscar lead
         let lead = await obtenerLeadPorTelefono(from);
 
-        // Guardar mensaje entrante
         await guardarMensajeDB({
           lead_id: lead?.id || null,
           telefono: from,
           direccion: "ENTRANTE",
           remitente: "CLIENTE",
           contenido: textoCliente,
-          tipo_contenido: tipo === "text" ? "TEXTO" : "TEXTO",
+          tipo_contenido: "TEXTO",
           wa_message_id: waMessageId,
           estado_mensaje: "received"
         });
 
-        // Si ya existe lead derivado, solo registrar y opcionalmente responder breve
         if (lead) {
-          const mensajeContinuacion = "Tu consulta ya está en seguimiento con un asesor. En breve continuará la atención.";
+          const mensajeContinuacion =
+            "Tu consulta ya está en seguimiento con un asesor. En breve continuará la atención.";
+
           const respMeta = await enviarTextoWhatsApp(from, mensajeContinuacion);
 
           await guardarMensajeDB({
@@ -381,14 +421,17 @@ app.post("/meta/webhook", async (req, res) => {
           continue;
         }
 
-        // Si no existe lead, seguimos con bot IA
         await asegurarBotEstado(from, "WhatsApp");
 
         const payloadIA = await prepararPayloadIA(from, textoCliente);
         const respuestaIA = await llamarOpenAI(payloadIA);
         const resultadoProceso = await procesarRespuestaIA(from, respuestaIA);
 
-        const textoSalida = resultadoProceso?.mensaje_cliente || respuestaIA?.mensaje_cliente || "Gracias. Seguimos con tu consulta.";
+        const textoSalida =
+          resultadoProceso?.mensaje_cliente ||
+          respuestaIA?.mensaje_cliente ||
+          "Gracias. Seguimos con tu consulta.";
+
         const respMeta = await enviarTextoWhatsApp(from, textoSalida);
 
         const estadoBotActual = await obtenerEstadoBot(from);
@@ -403,7 +446,6 @@ app.post("/meta/webhook", async (req, res) => {
           estado_mensaje: "sent"
         });
 
-        // Si derivó, registrar alerta de pre-firma solo si aplica después
         if (resultadoProceso?.accion === "DERIVAR" && resultadoProceso?.lead_id) {
           console.log("Lead derivado:", resultadoProceso.lead_id);
         }
@@ -415,7 +457,10 @@ app.post("/meta/webhook", async (req, res) => {
     return res.sendStatus(200);
   } catch (error) {
     console.error("Error general webhook:", error);
-    return res.sendStatus(500);
+    return res.status(500).json({
+      ok: false,
+      error: error.message
+    });
   }
 });
 
@@ -450,7 +495,7 @@ app.post("/lead/:id/prefirma", async (req, res) => {
       checklist
     });
   } catch (error) {
-    console.error(error);
+    console.error("Error enviando a pre-firma:", error);
     return res.status(500).json({
       ok: false,
       error: error.message
@@ -461,6 +506,6 @@ app.post("/lead/:id/prefirma", async (req, res) => {
 // =========================================================
 // INICIO
 // =========================================================
-app.listen(PORT, () => {
-  console.log(`Zafiro CRM backend corriendo en puerto ${PORT}`);
+app.listen(ENV.PORT, "0.0.0.0", () => {
+  console.log(`Zafiro CRM backend corriendo en puerto ${ENV.PORT}`);
 });
