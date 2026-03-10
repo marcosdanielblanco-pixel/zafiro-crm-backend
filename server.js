@@ -17,7 +17,7 @@ const META_PHONE_NUMBER_ID = process.env.META_PHONE_NUMBER_ID;
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -203,22 +203,14 @@ async function prepararPayloadIA(telefono, mensajeCliente) {
 }
 
 async function llamarOpenAI({ prompt_sistema, contexto_actual, mensaje_cliente }) {
-  const input = [
+  const messages = [
     {
       role: "system",
-      content: [
-        {
-          type: "input_text",
-          text: prompt_sistema
-        }
-      ]
+      content: prompt_sistema
     },
     {
       role: "user",
-      content: [
-        {
-          type: "input_text",
-          text:
+      content:
 `CONTEXTO ACTUAL DEL BOT:
 ${JSON.stringify(contexto_actual, null, 2)}
 
@@ -226,12 +218,10 @@ MENSAJE DEL CLIENTE:
 ${mensaje_cliente}
 
 Respondé SOLO en JSON válido.`
-        }
-      ]
     }
   ];
 
-  const resp = await fetch("https://api.openai.com/v1/responses", {
+  const resp = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${ENV.OPENAI_API_KEY}`,
@@ -239,7 +229,8 @@ Respondé SOLO en JSON válido.`
     },
     body: JSON.stringify({
       model: ENV.OPENAI_MODEL,
-      input
+      messages,
+      temperature: 0.3
     })
   });
 
@@ -247,24 +238,19 @@ Respondé SOLO en JSON válido.`
 
   if (!resp.ok) {
     console.error("Error OpenAI:", data);
-    throw new Error("Error llamando a OpenAI");
+    throw new Error("Error llamando a OpenAI: " + (data.error?.message || "desconocido"));
   }
 
-  let texto = "";
+  const texto = data.choices?.[0]?.message?.content || "";
 
-  if (Array.isArray(data.output)) {
-    for (const item of data.output) {
-      if (Array.isArray(item.content)) {
-        for (const c of item.content) {
-          if (c.type === "output_text" && c.text) {
-            texto += c.text;
-          }
-        }
-      }
-    }
-  }
+  // Limpiar posibles backticks de markdown que OpenAI a veces agrega
+  const textoLimpio = texto
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
 
-  const json = safeJsonParse(texto);
+  const json = safeJsonParse(textoLimpio);
   if (!json) {
     console.error("OpenAI devolvió algo no parseable:", texto);
     throw new Error("La respuesta de OpenAI no vino en JSON válido");
@@ -471,6 +457,7 @@ app.get("/health", (req, res) => {
   res.json({
     ok: true,
     servicio: "Zafiro CRM Backend",
+    modelo_ia: ENV.OPENAI_MODEL,
     timestamp: new Date().toISOString()
   });
 });
